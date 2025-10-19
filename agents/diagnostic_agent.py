@@ -48,14 +48,24 @@ def run_traceroute(target: str = "8.8.8.8", max_hops: int = 15) -> str:
                         'latency_ms': None
                     }
                     
-                    for part in parts[2:]:
+                    # Look for numeric value before 'ms'
+                    for i, part in enumerate(parts[2:], start=2):
                         try:
-                            if 'ms' in part:
-                                latency = float(part.replace('ms', ''))
+                            # Try to parse current part as float
+                            latency = float(part)
+                            # Check if next part is 'ms'
+                            if i + 1 < len(parts) and parts[i + 1] == 'ms':
                                 hop_data['latency_ms'] = round(latency, 2)
                                 break
                         except ValueError:
-                            continue
+                            # Also handle format like "1.610ms" (no space)
+                            if 'ms' in part and part != 'ms':
+                                try:
+                                    latency = float(part.replace('ms', ''))
+                                    hop_data['latency_ms'] = round(latency, 2)
+                                    break
+                                except ValueError:
+                                    continue
                     
                     hops.append(hop_data)
         
