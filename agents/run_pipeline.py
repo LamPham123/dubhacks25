@@ -34,7 +34,7 @@ print("="*70)
 
 # Step 3: Pass to Diagnostic Agent
 print("\n🔬 STEP 3: Passing alert to Diagnostic Agent...")
-diagnostic = WorkingDiagnosticAgent(interface='wlan0')
+diagnostic = WorkingDiagnosticAgent(interface='wlan0', llm=llm)
 
 # Step 4: Run diagnosis
 diagnosis = diagnostic.diagnose(alert)

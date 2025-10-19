@@ -4,6 +4,7 @@ Forces tool execution, uses Python logic for analysis
 """
 
 import json
+import re
 import time
 from datetime import datetime
 from typing import Dict
@@ -25,16 +26,42 @@ except ImportError:
     print("Error importing tools from diagnostic_agent.py")
     exit(1)
 
+# Import CrewAI for AI scoring
+try:
+    from crewai import Agent, Task, Crew
+except ImportError:
+    print("Warning: CrewAI not available, AI scoring will be disabled")
+    Agent = Task = Crew = None
+
 
 class WorkingDiagnosticAgent:
     """
     Diagnostic agent that ACTUALLY runs tools and analyzes results
     No LLM flakiness - pure Python logic
+    Uses CrewAI only for AI health scoring
     """
     
-    def __init__(self, interface: str = "wlan0"):
+    def __init__(self, interface: str = "wlan0", llm=None):
         self.interface = interface
-        print(f"✅ Working Diagnostic Agent initialized - interface: {interface}")
+        self.llm = llm
+        self.enable_ai_scoring = llm is not None and Agent is not None
+        
+        # Create AI scoring agent if available
+        if self.enable_ai_scoring:
+            self.scoring_agent = Agent(
+                role='Network Health Analyst',
+                goal='Analyze network metrics and provide a health score from 0-100',
+                backstory="""You are an expert network analyst who evaluates network performance.
+                You look at latency, signal strength, packet loss, and other metrics to determine
+                overall network health. You provide clear, concise health assessments.""",
+                tools=[],  # No tools needed for scoring
+                verbose=False,  # Keep it quiet
+                llm=llm
+            )
+            print(f"✅ Working Diagnostic Agent initialized - interface: {interface} (AI scoring enabled)")
+        else:
+            self.scoring_agent = None
+            print(f"✅ Working Diagnostic Agent initialized - interface: {interface}")
     
     def diagnose(self, alert: Dict) -> Dict:
         """
@@ -248,42 +275,199 @@ class WorkingDiagnosticAgent:
             if signal_dbm < -70:
                 diagnosis['recommendations'].insert(0, 'PRIORITY: Improve WiFi signal (move closer to router)')
         
-        # Check if network is actually healthy
+        # Check if network is actually healthy (no problems found)
         if not diagnosis['root_cause']:
-            # If router and internet latency are both good, network is healthy!
+            # Get router/internet latency to determine if healthy
+            router_latency = None
+            internet_latencies = []
+            
             if results.get('ping_multiple', {}).get('success'):
-                ping_results = results['ping_multiple']['results']
-                router_latency = None
-                internet_latencies = []
-                
-                for result in ping_results:
+                for result in results['ping_multiple']['results']:
                     if 'router' in result.get('target', '').lower() or result['target'].startswith('192.168'):
                         router_latency = result.get('latency_ms', 0)
                     else:
                         internet_latencies.append(result.get('latency_ms', 0))
-                
-                avg_internet = sum(internet_latencies) / len(internet_latencies) if internet_latencies else 0
-                
-                # Network is healthy if router < 50ms and internet < 100ms
-                if router_latency and router_latency < 50 and avg_internet < 100:
-                    diagnosis['primary_issue'] = 'network_healthy'
-                    diagnosis['root_cause'] = f'Network is performing well - router latency {router_latency:.1f}ms, internet latency {avg_internet:.0f}ms'
-                    diagnosis['confidence'] = 'high'
-                    diagnosis['recommendations'] = ['No action needed - network is healthy']
-                else:
-                    # Unclear situation
-                    diagnosis['primary_issue'] = 'network_status_unclear'
-                    diagnosis['root_cause'] = 'Unable to determine specific network issue from available data'
-                    diagnosis['confidence'] = 'low'
-                    diagnosis['recommendations'].append('Monitor network over time for patterns')
+            
+            avg_internet = sum(internet_latencies) / len(internet_latencies) if internet_latencies else 0
+            
+            # If metrics are good, network is healthy!
+            if router_latency and router_latency < 50 and avg_internet < 100 and signal_dbm > -70:
+                diagnosis['primary_issue'] = 'network_healthy'
+                diagnosis['root_cause'] = f'Network is performing well - router {router_latency:.1f}ms, internet {avg_internet:.0f}ms, signal {signal_dbm}dBm'
+                diagnosis['confidence'] = 'high'
+                diagnosis['recommendations'] = ['No action needed - network is healthy']
             else:
-                # Can't get diagnostics
-                diagnosis['primary_issue'] = 'diagnostic_failure'
-                diagnosis['root_cause'] = 'Unable to run diagnostic tests'
+                # Unclear situation - metrics are borderline
+                diagnosis['primary_issue'] = 'network_status_unclear'
+                diagnosis['root_cause'] = 'Network metrics are borderline or insufficient data to make determination'
                 diagnosis['confidence'] = 'low'
-                diagnosis['recommendations'].append('Check network connectivity and try again')
+                diagnosis['recommendations'].append('Monitor network performance over time')
+        
+        # Generate AI health score if LLM available
+        if self.enable_ai_scoring:
+            try:
+                score, explanation = self._generate_ai_health_score(diagnosis, results, metrics)
+                diagnosis['network_health_score'] = score
+                diagnosis['score_explanation'] = explanation
+                print(f"\n🤖 AI Health Score: {score}/100 - {explanation}")
+            except Exception as e:
+                print(f"\n⚠️  AI scoring failed: {e}")
+                # Don't break - diagnosis still works without score
         
         return diagnosis
+    
+    def _generate_ai_health_score(self, diagnosis: Dict, results: Dict, metrics: Dict) -> tuple:
+        """
+        Generate AI health score (0-100) using CrewAI framework
+        
+        Returns:
+            (score, explanation) tuple
+        """
+        if not self.scoring_agent:
+            return 50, "AI scoring not available"
+        
+        # Extract key metrics
+        ping = metrics.get('ping', {})
+        dns = metrics.get('dns', {})
+        signal = metrics.get('signal', {})
+        
+        ping_latency = ping.get('latency_ms', 0)
+        packet_loss = ping.get('packet_loss', 0)
+        dns_latency = dns.get('latency_ms', 0)
+        signal_dbm = signal.get('signal_dbm', 0)
+        
+        # Get router/internet latency from results
+        router_latency = 0
+        internet_latency = 0
+        if results.get('ping_multiple', {}).get('success'):
+            for result in results['ping_multiple']['results']:
+                if 'router' in result.get('target', '').lower() or result['target'].startswith('192.168'):
+                    router_latency = result.get('latency_ms', 0)
+                elif result.get('success'):
+                    internet_latency = result.get('latency_ms', 0)
+                    break
+        
+        # Create CrewAI task for scoring
+        scoring_task = Task(
+            description=f"""Score this network from 0-100.
+
+DATA: Router {router_latency:.1f}ms, Internet {internet_latency:.1f}ms, WiFi {signal_dbm}dBm
+
+RULES:
+- 90-100: All metrics excellent
+- 70-89: Good performance
+- 40-69: Fair, has issues
+- 0-39: Poor performance
+
+CRITICAL: Reply ONLY with this exact format: NUMBER|short explanation
+
+Example: 95|Router 4ms excellent, internet fast, WiFi strong
+
+Your answer:""",
+            agent=self.scoring_agent,
+            expected_output="Score from 0-100 with pipe-separated explanation"
+        )
+        
+        try:
+            # Create and run crew
+            crew = Crew(
+                agents=[self.scoring_agent],
+                tasks=[scoring_task],
+                verbose=False
+            )
+            
+            result = crew.kickoff()
+            response = str(result).strip()
+            
+            # Parse response - try multiple formats
+            score = None
+            explanation = ""
+            
+            print(f"\n   [DEBUG] AI raw response ({len(response)} chars):")
+            print(f"   {response[:300]}...")
+            
+            # Method 1: Look for SCORE|explanation format (preferred)
+            if '|' in response:
+                parts = response.split('|', 1)
+                score_str = ''.join(filter(str.isdigit, parts[0]))
+                if score_str:
+                    score = int(score_str)
+                    explanation = parts[1].strip()[:150]
+                    print(f"   [DEBUG] Parsed via Method 1 (pipe): score={score}")
+            
+            # Method 2: Extract numbers from response
+            if score is None:
+                # Look for patterns like "95", "Score: 95", "**95**", etc.
+                numbers = re.findall(r'\b(\d{1,3})\b', response)
+                print(f"   [DEBUG] Found numbers: {numbers[:5]}")
+                
+                if numbers:
+                    # Take first number that's 0-100
+                    for num in numbers:
+                        potential_score = int(num)
+                        if 0 <= potential_score <= 100:
+                            score = potential_score
+                            # Get text after the number
+                            score_pos = response.find(num)
+                            explanation = response[score_pos + len(num):].strip()
+                            # Clean up markdown and formatting
+                            explanation = explanation.replace('*', '').replace('#', '').strip()
+                            explanation = explanation.split('\n')[0][:150]  # First line only
+                            print(f"   [DEBUG] Parsed via Method 2 (regex): score={score}")
+                            break
+            
+            # Method 3: Rule-based fallback if AI completely failed
+            if score is None:
+                print(f"   [DEBUG] Both methods failed, using rule-based fallback")
+                score, explanation = self._fallback_health_score(router_latency, internet_latency, signal_dbm, packet_loss)
+                explanation = f"Rule-based: {explanation}"
+            
+            # Clamp score to 0-100
+            score = max(0, min(100, score))
+            
+            return score, explanation
+            
+        except Exception as e:
+            # Fallback to rule-based scoring
+            print(f"   AI scoring failed, using rule-based: {e}")
+            return self._fallback_health_score(router_latency, internet_latency, signal_dbm, packet_loss)
+    
+    def _fallback_health_score(self, router_latency, internet_latency, signal_dbm, packet_loss) -> tuple:
+        """Rule-based fallback scoring if LLM fails"""
+        score = 100
+        issues = []
+        
+        # Router latency penalty
+        if router_latency > 100:
+            score -= 30
+            issues.append("high router latency")
+        elif router_latency > 50:
+            score -= 15
+            issues.append("moderate router latency")
+        
+        # Internet latency penalty
+        if internet_latency > 200:
+            score -= 20
+            issues.append("high internet latency")
+        elif internet_latency > 100:
+            score -= 10
+        
+        # Signal strength penalty
+        if signal_dbm < -80:
+            score -= 25
+            issues.append("weak WiFi signal")
+        elif signal_dbm < -70:
+            score -= 10
+        
+        # Packet loss penalty
+        if packet_loss > 5:
+            score -= 20
+            issues.append("packet loss")
+        
+        score = max(0, score)
+        explanation = ", ".join(issues) if issues else "Network performing well"
+        
+        return score, explanation
     
     def print_diagnosis(self, diagnosis: Dict):
         """Print diagnosis in readable format"""
@@ -294,6 +478,32 @@ class WorkingDiagnosticAgent:
         print(f"\n📊 Primary Issue: {diagnosis['primary_issue']}")
         print(f"🎯 Root Cause: {diagnosis['root_cause']}")
         print(f"📈 Confidence: {diagnosis['confidence'].upper()}")
+        
+        # Display AI health score if available
+        if 'network_health_score' in diagnosis:
+            score = diagnosis['network_health_score']
+            explanation = diagnosis.get('score_explanation', '')
+            
+            # Choose emoji based on score
+            if score >= 90:
+                emoji = "🟢"
+                rating = "EXCELLENT"
+            elif score >= 70:
+                emoji = "🟡"
+                rating = "GOOD"
+            elif score >= 40:
+                emoji = "🟠"
+                rating = "FAIR"
+            else:
+                emoji = "🔴"
+                rating = "POOR"
+            
+            # Create visual bar
+            filled = int(score / 10)
+            bar = "█" * filled + "░" * (10 - filled)
+            
+            print(f"\n{emoji} AI Health Score: {score}/100 ({rating})")
+            print(f"   [{bar}] {explanation}")
         
         if diagnosis['evidence']:
             print(f"\n🔍 Evidence:")
