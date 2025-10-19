@@ -109,6 +109,8 @@ def ping_multiple_targets(targets: str = "router,8.8.8.8,1.1.1.1") -> str:
                     results.append({
                         'target': 'router',
                         'success': False,
+                        'latency_ms': 0,
+                        'packet_loss': 100.0,
                         'error': 'No default gateway found'
                     })
                     continue
@@ -119,15 +121,17 @@ def ping_multiple_targets(targets: str = "router,8.8.8.8,1.1.1.1") -> str:
                 results.append({
                     'target': target,
                     'success': result.is_alive,
-                    'latency_ms': round(result.avg_rtt, 2) if result.avg_rtt else None,
+                    'latency_ms': round(result.avg_rtt, 2) if result.avg_rtt else 0,
                     'packet_loss': round(result.packet_loss, 1),
-                    'min_rtt': round(result.min_rtt, 2) if result.min_rtt else None,
-                    'max_rtt': round(result.max_rtt, 2) if result.max_rtt else None
+                    'min_rtt': round(result.min_rtt, 2) if result.min_rtt else 0,
+                    'max_rtt': round(result.max_rtt, 2) if result.max_rtt else 0
                 })
             except Exception as e:
                 results.append({
                     'target': target,
                     'success': False,
+                    'latency_ms': 0,
+                    'packet_loss': 100.0,
                     'error': str(e)
                 })
         

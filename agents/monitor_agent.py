@@ -68,11 +68,12 @@ def dns_lookup(domain: str = "google.com") -> str:
     Returns:
         JSON string with DNS lookup results including success status and resolution time
     """
-    resolver = dns.resolver.Resolver()
-    resolver.timeout = 2
-    resolver.lifetime = 2
-    
     try:
+        # Initialize resolver (can fail if no network/DNS configured)
+        resolver = dns.resolver.Resolver()
+        resolver.timeout = 2
+        resolver.lifetime = 2
+        
         start = time.time()
         answers = resolver.resolve(domain, 'A')
         latency_ms = (time.time() - start) * 1000
@@ -84,10 +85,12 @@ def dns_lookup(domain: str = "google.com") -> str:
             'domain': domain
         })
     except Exception as e:
+        # Handle DNS failures (including no nameservers when offline)
         return json.dumps({
             'success': False,
             'error': str(e),
-            'domain': domain
+            'domain': domain,
+            'latency_ms': 0
         })
 
 

@@ -17,7 +17,12 @@ print("="*70)
 
 # Step 1: Initialize Monitor Agent
 print("\n📡 STEP 1: Initializing Monitor Agent...")
-llm = LLM(model='ollama/qwen2.5:0.5b', base_url='http://localhost:11434')
+llm = LLM(
+    model='ollama/qwen2.5:0.5b',
+    base_url='http://localhost:11434',
+    temperature=0.3,  # Lower = faster, more focused
+    # max_tokens=100    # Limit response length for speed
+)
 monitor = NetworkMonitor(llm, interface='wlan0')
 
 # Step 2: Collect network metrics

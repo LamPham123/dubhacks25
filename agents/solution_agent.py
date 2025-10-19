@@ -309,7 +309,8 @@ class SolutionAgent:
             You focus on quick fixes that anyone can do. You are brief and practical.""",
             tools=[],  # NO TOOLS - keeps it simple for small models
             verbose=True,
-            llm=llm
+            llm=llm,
+            max_iter=1  # Only one iteration for speed
         )
         
         print(f"✅ AI Solution Agent initialized with LLM: {llm.model}")
@@ -447,9 +448,31 @@ Be specific and actionable. Keep each item to one sentence.""",
             verbose=True
         )
         
-        # Execute the crew
+        # Execute the crew with progress indicator
         print("\n🤖 Engaging AI Solution Agent...")
-        result = crew.kickoff()
+        
+        import threading
+        import time
+        
+        # Progress indicator thread
+        stop_progress = threading.Event()
+        def show_progress():
+            dots = 0
+            while not stop_progress.is_set():
+                time.sleep(3)
+                if not stop_progress.is_set():
+                    dots = (dots + 1) % 4
+                    print(f"   ⏳ AI thinking{'.' * (dots + 1)}")
+        
+        progress_thread = threading.Thread(target=show_progress, daemon=True)
+        progress_thread.start()
+        
+        try:
+            result = crew.kickoff()
+        finally:
+            # Stop progress indicator
+            stop_progress.set()
+            progress_thread.join(timeout=0.1)
         
         # Parse the simple text result
         result_text = str(result).strip()

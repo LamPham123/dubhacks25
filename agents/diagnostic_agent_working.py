@@ -41,22 +41,25 @@ class WorkingDiagnosticAgent:
     Uses CrewAI only for AI health scoring
     """
     
-    def __init__(self, interface: str = "wlan0", llm=None):
+    def __init__(self, interface: str = "wlan0", llm=None, enable_ai_scoring=True):
         self.interface = interface
         self.llm = llm
-        self.enable_ai_scoring = llm is not None and Agent is not None
+        self.enable_ai_scoring = enable_ai_scoring and llm is not None and Agent is not None
         
-        # Create AI scoring agent if available
+        # Create AI scoring agent if available (simple and fast!)
         if self.enable_ai_scoring:
             self.scoring_agent = Agent(
-                role='Network Health Analyst',
-                goal='Analyze network metrics and provide a health score from 0-100',
-                backstory="""You are an expert network analyst who evaluates network performance.
-                You look at latency, signal strength, packet loss, and other metrics to determine
-                overall network health. You provide clear, concise health assessments.""",
-                tools=[],  # No tools needed for scoring
-                verbose=False,  # Keep it quiet
-                llm=llm
+                role='Network Health Scorer',
+                goal='Rate network health from 0-100 based on latency and signal',
+                backstory="""You are a network expert. You score networks:
+- Fast latency (<50ms) = high score (80-100)
+- Medium latency (50-100ms) = medium score (50-79)
+- Slow latency (>100ms) = low score (0-49)
+Answer with just a number and brief reason.""",
+                tools=[],
+                verbose=False,
+                llm=llm,
+                max_iter=1  # Only one iteration for speed
             )
             print(f"✅ Working Diagnostic Agent initialized - interface: {interface} (AI scoring enabled)")
         else:
@@ -187,11 +190,15 @@ class WorkingDiagnosticAgent:
             
             for result in ping_results:
                 if 'router' in result.get('target', '').lower() or result['target'].startswith('192.168'):
-                    router_latency = result.get('latency_ms')
+                    router_latency = result.get('latency_ms', 0) or 0  # Handle None
                 else:
-                    internet_latency.append(result.get('latency_ms', 0))
+                    latency = result.get('latency_ms', 0)
+                    # Ensure we never append None
+                    internet_latency.append(latency if latency is not None else 0)
             
-            avg_internet_latency = sum(internet_latency) / len(internet_latency) if internet_latency else 0
+            # Filter out any None values and calculate average
+            valid_latencies = [lat for lat in internet_latency if lat is not None]
+            avg_internet_latency = sum(valid_latencies) / len(valid_latencies) if valid_latencies else 0
             
             print(f"\n📊 Latency Analysis:")
             print(f"   Router: {router_latency}ms" if router_latency else "   Router: not tested")
@@ -319,22 +326,13 @@ class WorkingDiagnosticAgent:
     def _generate_ai_health_score(self, diagnosis: Dict, results: Dict, metrics: Dict) -> tuple:
         """
         Generate AI health score (0-100) using CrewAI framework
+        Simple and fast like the solution agent!
         
         Returns:
             (score, explanation) tuple
         """
         if not self.scoring_agent:
             return 50, "AI scoring not available"
-        
-        # Extract key metrics
-        ping = metrics.get('ping', {})
-        dns = metrics.get('dns', {})
-        signal = metrics.get('signal', {})
-        
-        ping_latency = ping.get('latency_ms', 0)
-        packet_loss = ping.get('packet_loss', 0)
-        dns_latency = dns.get('latency_ms', 0)
-        signal_dbm = signal.get('signal_dbm', 0)
         
         # Get router/internet latency from results
         router_latency = 0
@@ -347,89 +345,106 @@ class WorkingDiagnosticAgent:
                     internet_latency = result.get('latency_ms', 0)
                     break
         
-        # Create CrewAI task for scoring
+        signal = metrics.get('signal', {})
+        signal_dbm = signal.get('signal_dbm', 0)
+        packet_loss = metrics.get('ping', {}).get('packet_loss', 0)
+        
+        # Create scoring task with clear guidance
         scoring_task = Task(
-            description=f"""Score this network from 0-100.
+            description=f"""Score this network 0-100:
+- Router: {router_latency:.0f}ms (Good: <50, Bad: >100)
+- Internet: {internet_latency:.0f}ms (Good: <100, Bad: >200)
+- WiFi: {signal_dbm}dBm (Good: >-60, Bad: <-70)
 
-DATA: Router {router_latency:.1f}ms, Internet {internet_latency:.1f}ms, WiFi {signal_dbm}dBm
+Give ONE number 0-100 and short reason.
+Format: NUMBER|reason
+Example: 85|fast router, good signal
 
-RULES:
-- 90-100: All metrics excellent
-- 70-89: Good performance
-- 40-69: Fair, has issues
-- 0-39: Poor performance
-
-CRITICAL: Reply ONLY with this exact format: NUMBER|short explanation
-
-Example: 95|Router 4ms excellent, internet fast, WiFi strong
-
-Your answer:""",
+Your score:""",
             agent=self.scoring_agent,
-            expected_output="Score from 0-100 with pipe-separated explanation"
+            expected_output="NUMBER|reason"
         )
         
         try:
-            # Create and run crew
-            crew = Crew(
-                agents=[self.scoring_agent],
-                tasks=[scoring_task],
-                verbose=False
-            )
+            # Run CrewAI scoring with progress indicator
+            import threading
+            import time
             
-            result = crew.kickoff()
-            response = str(result).strip()
+            start = time.time()
+            print(f"\n   🤖 AI scoring...")
             
-            # Parse response - try multiple formats
+            # Progress indicator thread
+            stop_progress = threading.Event()
+            def show_progress():
+                dots = 0
+                while not stop_progress.is_set():
+                    time.sleep(3)
+                    if not stop_progress.is_set():
+                        dots = (dots + 1) % 4
+                        elapsed = time.time() - start
+                        print(f"   ⏳ Still working{'.' * (dots + 1)} ({elapsed:.1f}s)")
+            
+            progress_thread = threading.Thread(target=show_progress, daemon=True)
+            progress_thread.start()
+            
+            try:
+                crew_start = time.time()
+                crew = Crew(
+                    agents=[self.scoring_agent],
+                    tasks=[scoring_task],
+                    verbose=False
+                )
+                print(f"   ⏱️  Crew created in {time.time() - crew_start:.2f}s")
+                
+                kickoff_start = time.time()
+                result = crew.kickoff()
+                print(f"   ⏱️  Kickoff took {time.time() - kickoff_start:.2f}s")
+                response = str(result).strip()
+            finally:
+                # Stop progress indicator
+                stop_progress.set()
+                progress_thread.join(timeout=0.1)
+            
+            # Simple parsing: look for "NUMBER|text" format
             score = None
-            explanation = ""
+            explanation = "AI scoring"
             
-            print(f"\n   [DEBUG] AI raw response ({len(response)} chars):")
-            print(f"   {response[:300]}...")
-            
-            # Method 1: Look for SCORE|explanation format (preferred)
             if '|' in response:
                 parts = response.split('|', 1)
-                score_str = ''.join(filter(str.isdigit, parts[0]))
-                if score_str:
-                    score = int(score_str)
-                    explanation = parts[1].strip()[:150]
-                    print(f"   [DEBUG] Parsed via Method 1 (pipe): score={score}")
+                nums = ''.join(filter(str.isdigit, parts[0]))
+                if nums:
+                    score = int(nums)
+                    explanation = parts[1].strip()[:100]
             
-            # Method 2: Extract numbers from response
+            # If no pipe, just find first number 0-100
             if score is None:
-                # Look for patterns like "95", "Score: 95", "**95**", etc.
                 numbers = re.findall(r'\b(\d{1,3})\b', response)
-                print(f"   [DEBUG] Found numbers: {numbers[:5]}")
-                
-                if numbers:
-                    # Take first number that's 0-100
-                    for num in numbers:
-                        potential_score = int(num)
-                        if 0 <= potential_score <= 100:
-                            score = potential_score
-                            # Get text after the number
-                            score_pos = response.find(num)
-                            explanation = response[score_pos + len(num):].strip()
-                            # Clean up markdown and formatting
-                            explanation = explanation.replace('*', '').replace('#', '').strip()
-                            explanation = explanation.split('\n')[0][:150]  # First line only
-                            print(f"   [DEBUG] Parsed via Method 2 (regex): score={score}")
-                            break
+                for num in numbers:
+                    if 0 <= int(num) <= 100:
+                        score = int(num)
+                        explanation = response[:100]
+                        break
             
-            # Method 3: Rule-based fallback if AI completely failed
+            # Fallback to rule-based if parsing failed
             if score is None:
-                print(f"   [DEBUG] Both methods failed, using rule-based fallback")
                 score, explanation = self._fallback_health_score(router_latency, internet_latency, signal_dbm, packet_loss)
                 explanation = f"Rule-based: {explanation}"
             
-            # Clamp score to 0-100
-            score = max(0, min(100, score))
+            # # SANITY CHECK: Override obviously wrong AI scores
+            # rule_score, _ = self._fallback_health_score(router_latency, internet_latency, signal_dbm, packet_loss)
             
-            return score, explanation
+            # # If AI score is wildly different from rule-based (>40 points), use rule-based
+            # if abs(score - rule_score) > 40:
+            #     print(f"   ⚠️  AI score {score} differs too much from rule-based {rule_score}, using rule-based")
+            #     score, explanation = self._fallback_health_score(router_latency, internet_latency, signal_dbm, packet_loss)
+            #     explanation = f"Rule-based (AI override): {explanation}"
+            
+            print(f"   ✅ Score: {score}/100")
+            return max(0, min(100, score)), explanation
             
         except Exception as e:
             # Fallback to rule-based scoring
-            print(f"   AI scoring failed, using rule-based: {e}")
+            print(f"   ⚠️  AI scoring failed, using rule-based")
             return self._fallback_health_score(router_latency, internet_latency, signal_dbm, packet_loss)
     
     def _fallback_health_score(self, router_latency, internet_latency, signal_dbm, packet_loss) -> tuple:
