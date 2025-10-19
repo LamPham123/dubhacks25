@@ -1,0 +1,14 @@
+crewai
+crewai-tools
+langchain-community
+langchain-ollama
+
+# Network diagnostic system additional dependencies
+psutil>=5.9.0
+flask>=2.3.0
+scapy>=2.5.0
+netifaces>=0.11.0
+
+# Optional: For advanced network tools
+python-nmap>=0.7.1
+speedtest-cli>=2.1.3
