@@ -535,12 +535,40 @@ class WorkingDiagnosticAgent:
             if signal_dbm < -70:
                 diagnosis['recommendations'].insert(0, 'PRIORITY: Improve WiFi signal (move closer to router)')
         
-        # Fallback if no specific diagnosis
+        # Check if network is actually healthy
         if not diagnosis['root_cause']:
-            diagnosis['primary_issue'] = 'network_degradation'
-            diagnosis['root_cause'] = 'Network performance is degraded, but specific cause unclear from available data'
-            diagnosis['confidence'] = 'low'
-            diagnosis['recommendations'].append('Run additional diagnostics')
+            # If router and internet latency are both good, network is healthy!
+            if results.get('ping_multiple', {}).get('success'):
+                ping_results = results['ping_multiple']['results']
+                router_latency = None
+                internet_latencies = []
+                
+                for result in ping_results:
+                    if 'router' in result.get('target', '').lower() or result['target'].startswith('192.168'):
+                        router_latency = result.get('latency_ms', 0)
+                    else:
+                        internet_latencies.append(result.get('latency_ms', 0))
+                
+                avg_internet = sum(internet_latencies) / len(internet_latencies) if internet_latencies else 0
+                
+                # Network is healthy if router < 50ms and internet < 100ms
+                if router_latency and router_latency < 50 and avg_internet < 100:
+                    diagnosis['primary_issue'] = 'network_healthy'
+                    diagnosis['root_cause'] = f'Network is performing well - router latency {router_latency:.1f}ms, internet latency {avg_internet:.0f}ms'
+                    diagnosis['confidence'] = 'high'
+                    diagnosis['recommendations'] = ['No action needed - network is healthy']
+                else:
+                    # Unclear situation
+                    diagnosis['primary_issue'] = 'network_status_unclear'
+                    diagnosis['root_cause'] = 'Unable to determine specific network issue from available data'
+                    diagnosis['confidence'] = 'low'
+                    diagnosis['recommendations'].append('Monitor network over time for patterns')
+            else:
+                # Can't get diagnostics
+                diagnosis['primary_issue'] = 'diagnostic_failure'
+                diagnosis['root_cause'] = 'Unable to run diagnostic tests'
+                diagnosis['confidence'] = 'low'
+                diagnosis['recommendations'].append('Check network connectivity and try again')
         
         return diagnosis
     

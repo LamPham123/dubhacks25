@@ -1,6 +1,6 @@
 """
-Pipeline: Monitor Agent -> Diagnostic Agent
-Monitor collects network metrics, Diagnostic analyzes them
+Pipeline: Monitor Agent -> Diagnostic Agent -> Solution Agent
+Monitor collects network metrics, Diagnostic analyzes them, Solution provides fixes
 """
 import json
 import sys
@@ -8,6 +8,7 @@ sys.path.insert(0, '/home/admin/Documents/crewai_starter/agents')
 
 from monitor_agent import NetworkMonitor
 from diagnostic_agent_working import WorkingDiagnosticAgent
+from solution_agent import SolutionAgent
 from crewai import LLM
 
 print("="*70)
@@ -51,5 +52,23 @@ print("="*70)
 # Step 6: Print final diagnosis
 diagnostic.print_diagnosis(diagnosis)
 
+# Step 7: Generate AI solutions
+print("\n🚀 STEP 7: Generating AI-powered solutions...")
+solution_agent = SolutionAgent(llm)
+solutions = solution_agent.generate_solutions(diagnosis)
+
+# Step 8: Print solutions
+solution_agent.print_solutions(solutions)
+
 print("\n✅ Pipeline complete!")
+print("="*70)
+print("SUMMARY: Monitor → Diagnostic → Solution")
+print(f"  • Network Status: {alert['status']}")
+print(f"  • Root Cause: {diagnosis['root_cause'][:60]}...")
+solutions_list = solutions.get('solutions', {}).get('solutions_list', [])
+if solutions_list:
+    print(f"  • Top Recommendation: {solutions_list[0][:60]}...")
+else:
+    print(f"  • Recommendations: See AI solutions above")
+print("="*70)
 
